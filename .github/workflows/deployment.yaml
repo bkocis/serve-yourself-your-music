@@ -1,0 +1,30 @@
+name: Deploy to server
+
+on:
+  workflow_run:
+    workflows: ["lint_and_test"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Test SSH connection
+      run: ssh -v ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} 'echo "Connection successful"'
+
+    - name: Execute remote command
+      run: |
+        ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} 'cd ${{ secrets.MEDIA_STREAMER_LOCAL_PATH }} && make restart_docker'

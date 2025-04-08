@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>【 Ｓ Ξ Ｒ Ｖ Ξ ░ Ｙ Ø Ｕ Ｒ Ｓ Ξ Ｌ Ｆ ░ Ｙ Ø Ｕ Ｒ ░ Ｍ Ｕ Ｓ Ｉ Ｃ ！ 】</title>
+    <!-- Use a relative path that works with any base URL -->
+    <link rel="stylesheet" href="./templates/style.css">
+    <script>
+        // Determine the base path from current location
+        const basePath = window.location.pathname.replace(/\/+$/, '');
+
+        // Add this before any other scripts load
+        document.write(`<base href="${basePath}/">`);
+    </script>
+    <style>
+        .nav-menu {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+
+        .nav-button {
+            color: #2196F3;
+            text-decoration: none;
+            margin: 0 10px;
+            padding: 8px 16px;
+            border: 2px solid #2196F3;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+
+        .nav-button:hover {
+            background-color: #2196F3;
+            color: white;
+            text-decoration: none;
+        }
+
+        .delete-controls {
+            margin: 10px 0;
+            text-align: right;
+        }
+
+        .delete-button {
+            background-color: #ff4444;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        .delete-button:hover {
+            background-color: #cc0000;
+        }
+
+        .cancel-button {
+            background-color: #666;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .cancel-button:hover {
+            background-color: #444;
+        }
+
+        .media-item.selected {
+            background-color: rgba(255, 68, 68, 0.1);
+            border: 2px solid #ff4444;
+        }
+
+        .media-item .checkbox {
+            display: none;
+            margin-right: 10px;
+        }
+
+        .delete-mode .media-item .checkbox {
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>【 Ｓ Ξ Ｒ Ｖ Ξ ░ Ｙ Ø Ｕ Ｒ Ｓ Ξ Ｌ Ｆ ░ Ｙ Ø Ｕ Ｒ ░ Ｍ Ｕ Ｓ Ｉ Ｃ ！ 】</h1>
+
+        <div class="nav-menu">
+            <a href="./download" class="nav-button">Download New Media</a>
+        </div>
+
+        <div class="player-container hidden">
+            <div id="audio-player" class="media-player">
+                <div id="current-thumbnail" class="current-thumbnail">
+                    <img src="./thumbnail/default_audio_thumbnail.jpg" alt="Album art">
+                </div>
+                <audio id="audio-element" controls></audio>
+                <div id="audio-info">
+                    <p id="now-playing">Select a track to play</p>
+                    <p id="current-filename" class="current-filename"></p>
+                </div>
+            </div>
+
+            <div id="video-player" class="media-player hidden">
+                <video id="video-element" controls></video>
+                <div id="video-info">
+                    <p id="current-filename-video" class="current-filename"></p>
+                </div>
+            </div>
+
+            <div class="player-controls">
+                <button id="prev-button" onclick="window.playPreviousInPlaylist()">Previous</button>
+                <button id="next-button" onclick="window.playNextInPlaylist()">Next</button>
+            </div>
+        </div>
+
+        <div class="media-list-container">
+            <div class="search-container">
+                <input type="text" id="search-input" placeholder="Search media...">
+            </div>
+
+            <div class="sort-container">
+                <select id="sort-select">
+                    <option value="name">Sort by Name</option>
+                    <option value="date">Sort by Date Modified</option>
+                    <option value="date_downloaded">Sort by Date Downloaded</option>
+                    <option value="size">Sort by Size</option>
+                </select>
+                <select id="sort-order">
+                    <option value="asc">Ascending</option>
+                    <option value="desc">Descending</option>
+                </select>
+            </div>
+
+            <div class="tabs">
+                <button class="tab-button active" data-type="all">All</button>
+                <button class="tab-button" data-type="audio">Audio</button>
+                <button class="tab-button" data-type="video">Video</button>
+                <button class="tab-button" data-type="create-playlist">Create Playlist</button>
+                <button class="tab-button" data-type="playlists">Playlists</button>
+                <button class="tab-button" data-type="delete">Delete</button>
+            </div>
+
+            <div class="delete-controls hidden">
+                <button id="delete-selected" class="delete-button">Delete Selected Files</button>
+                <button id="cancel-delete" class="cancel-button">Cancel</button>
+            </div>
+
+            <div class="playlist-controls hidden">
+                <div class="playlist-form">
+                    <input type="text" id="playlist-name" placeholder="Enter playlist name" class="playlist-name-input">
+                    <button id="save-playlist" class="save-button">Save Playlist</button>
+                    <button id="cancel-playlist" class="cancel-button">Cancel</button>
+                </div>
+            </div>
+
+            <div class="playlists-list hidden">
+                <div class="playlists-container" id="playlists-container">
+                    <!-- Playlists will be listed here -->
+                </div>
+            </div>
+
+            <div class="media-list" id="media-list">
+                <p class="loading">Loading media files...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Use a relative path that works with the base tag -->
+    <script src="./templates/script.js"></script>
+
+    <!-- Add path fixing script -->
+    <script>
+        // This script will fix any API calls in your existing JS
+        window.apiBasePath = basePath;
+
+        // You can access this in your script.js with window.apiBasePath
+        console.log('API Base Path:', window.apiBasePath);
+    </script>
+
+    <script>
+        // Add description modal HTML structure
+        document.write(`
+            <div id="description-modal" class="description-modal">
+                <div class="description-modal-content">
+                    <div class="description-modal-header">
+                        <div class="description-modal-title">Description</div>
+                        <button class="description-modal-close">&times;</button>
+                    </div>
+                    <div class="description-modal-body">
+                        <p id="description-text">This is a description of the media item.</p>
+                    </div>
+                </div>
+            </div>
+        `);
+    </script>
+</body>
+</html>

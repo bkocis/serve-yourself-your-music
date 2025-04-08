@@ -1,0 +1,13 @@
+.idea/
+/resources/
+# Ignore everything in downloads folder
+downloads/*
+
+# But don't ignore the downloads folder itself
+!downloads/
+
+# And don't ignore the specific file you want to track
+!downloads/default_audio_thumbnail.jpg
+!downloads/default_video_thumbnail.jpg
+/report.html
+/assets/
