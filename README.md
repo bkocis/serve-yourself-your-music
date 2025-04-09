@@ -1,5 +1,3 @@
-[![Deploy to server](https://github.com/bkocis/youtube-scraping-rocket/actions/workflows/deployment.yaml/badge.svg)](https://github.com/bkocis/youtube-scraping-rocket/actions/workflows/deployment.yaml)
-
 ---
 
 # Media Player, Search & Downloader
