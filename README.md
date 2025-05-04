@@ -1,7 +1,7 @@
 
 ---
 
-# Media Player, Search & Downloader
+# 【 Ｓ Ξ Ｒ Ｖ Ξ ░ Ｙ Ø Ｕ Ｒ Ｓ Ξ Ｌ Ｆ ░ Ｙ Ø Ｕ Ｒ ░ Ｍ Ｕ Ｓ Ｉ Ｃ ！ 】
 
 A web-based media player and downloader application that allows you to download, store, and play media content from YouTube and SoundCloud. The application is designed to be deployed on a remote server, providing a centralized media library accessible through a web interface.
 
