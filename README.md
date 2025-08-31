@@ -1,9 +1,10 @@
+[![Deploy to server](https://github.com/bkocis/youtube-scraping-rocket/actions/workflows/deployment.yaml/badge.svg)](https://github.com/bkocis/youtube-scraping-rocket/actions/workflows/deployment.yaml)
 
 ---
 
-## 【 Ｓ Ξ Ｒ Ｖ Ξ ░ Ｙ Ø Ｕ Ｒ Ｓ Ξ Ｌ Ｆ ░ Ｙ Ø Ｕ Ｒ ░ Ｍ Ｕ Ｓ Ｉ Ｃ ！ 】
+# Personal Music Server & Media Player
 
-A web-based media player and downloader application that allows you to download, store, and play media content from YouTube and SoundCloud. The application is designed to be deployed on a remote server, providing a centralized media library accessible through a web interface.
+A web-based personal music server and media player application that allows you to store, organize, and stream your personal media collection. The application is designed to be deployed on a remote server, providing a centralized media library accessible through a web interface for personal use only.
 
 Index page with the media player, media types, playlist creation, and item deletion: 
 <div align="center"> <img src="templates/assets/player.jpg" width="600"> </div>
@@ -216,8 +217,14 @@ This implementation still requires to have an env variable `MEDIA_STREAMER_LOCAL
   - [] analytics 
 
 Front-end 
-- [ ] playlist 
-  - [ ] play next track in playlist automatically 
+- [✅] playlist 
+  - [✅] play next track in playlist automatically 
   - [ ] add track to existing playlist
+
+Auth 
+- [ ] standard auth with libraries for python
+
+Cronjob for youtube search and playlist recommendation build
+- daily search for new videos/music for a recommender system/music discovery
 
 

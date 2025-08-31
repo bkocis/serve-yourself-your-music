@@ -11,3 +11,6 @@ downloads/*
 !downloads/default_video_thumbnail.jpg
 /report.html
 /assets/
+
+__pycache__/
+tests/__pycache__/

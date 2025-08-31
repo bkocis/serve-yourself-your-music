@@ -258,17 +258,16 @@ document.addEventListener('DOMContentLoaded', function() {
             alert('Please select files to delete');
             return;
         }
-
         if (!confirm(`Are you sure you want to delete ${selectedFiles.size} file(s)?`)) {
             return;
         }
-
+        const user = getCurrentUser();
         fetch(`${basePath}/delete`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ files: Array.from(selectedFiles) })
+            body: JSON.stringify({ files: Array.from(selectedFiles), user })
         })
         .then(response => response.json())
         .then(data => {
@@ -362,17 +361,56 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // Helper to get current user
+    function getCurrentUser() {
+        let user = localStorage.getItem('currentUser') || '';
+        if (!user) {
+            user = prompt('Please enter your username:');
+            if (user) {
+                user = user.trim();
+                
+                // Check if a user with the same normalized name already exists
+                const registeredUsers = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+                const normalizedUsername = user.toLowerCase();
+                const existingUser = registeredUsers.find(u => u.toLowerCase() === normalizedUsername);
+                
+                if (existingUser) {
+                    // Use existing username with original case for display
+                    localStorage.setItem('currentUser', existingUser);
+                    user = existingUser;
+                } else {
+                    // Store new username
+                    registeredUsers.push(user);
+                    localStorage.setItem('registeredUsers', JSON.stringify(registeredUsers));
+                    localStorage.setItem('currentUser', user);
+                }
+                
+                // Refresh the page to update the user-info display
+                setTimeout(() => {
+                    location.reload();
+                }, 100);
+            } else {
+                user = '';
+            }
+        }
+        return user.trim();
+    }
+
     // Fetch media files from the server
-    fetch(`${basePath}/media`)
-        .then(response => response.json())
-        .then(data => {
-            mediaFiles = data;
-            renderMediaList();
-        })
-        .catch(error => {
-            console.error('Error fetching media files:', error);
-            mediaList.innerHTML = '<p class="loading">Error loading media files. Please try again.</p>';
-        });
+    function fetchMediaFiles() {
+        const user = getCurrentUser();
+        fetch(`${basePath}/media?user=${encodeURIComponent(user)}`)
+            .then(response => response.json())
+            .then(data => {
+                mediaFiles = data;
+                renderMediaList();
+            })
+            .catch(error => {
+                console.error('Error fetching media files:', error);
+                mediaList.innerHTML = '<p class="loading">Error loading media files. Please try again.</p>';
+            });
+    }
+    fetchMediaFiles();
 
     // Sort controls
     sortSelect.addEventListener('change', function() {
@@ -410,9 +448,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Show the player container
                 document.querySelector('.player-container').classList.remove('hidden');
                 
-                // Add basePath to stream and thumbnail URLs
-                const streamUrl = `${basePath}/stream/${trackPath}`;
-                const thumbnailUrl = `${basePath}/thumbnail/${fileInfo.thumbnail}`;
+                // Add basePath to stream and thumbnail URLs, include user param
+                const user = getCurrentUser();
+                const streamUrl = `${basePath}/stream/${trackPath}?user=${encodeURIComponent(user)}`;
+                const thumbnailUrl = `${basePath}/thumbnail/${fileInfo.thumbnail}?user=${encodeURIComponent(user)}`;
 
                 if (fileInfo.type === 'audio') {
                     // Show audio player, hide video player
@@ -430,7 +469,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     nowPlaying.textContent = 'Now Playing: ' + fileInfo.name;
                     currentFilename.textContent = fileInfo.name;
                     currentFilenameVideo.textContent = '';
-                } else if (fileInfo.type === 'video') {
+                } else {
                     // Show video player, hide audio player
                     videoPlayerContainer.classList.remove('hidden');
                     audioPlayerContainer.classList.add('hidden');
@@ -555,11 +594,14 @@ document.addEventListener('DOMContentLoaded', function() {
             mediaItem.dataset.id = file.id;
             mediaItem.dataset.type = file.type;
 
-            // Add basePath to thumbnail URL
+            // Add basePath to thumbnail URL, include user param
+            const user = getCurrentUser();
+            const thumbnailUrl = `${basePath}/thumbnail/${file.thumbnail}?user=${encodeURIComponent(user)}`;
+
             mediaItem.innerHTML = `
                 <input type="checkbox" class="checkbox" ${selectedFiles.has(file.path) ? 'checked' : ''}>
                 <div class="media-item-thumbnail">
-                    <img src="${basePath}/thumbnail/${file.thumbnail}" alt="${file.name}">
+                    <img src="${thumbnailUrl}" alt="${file.name}">
                 </div>
                 <div class="media-item-info">
                     <div class="media-item-name">${file.name}</div>
@@ -630,12 +672,13 @@ document.addEventListener('DOMContentLoaded', function() {
         // Show the player container
         document.querySelector('.player-container').classList.remove('hidden');
 
-        // Add basePath to stream and thumbnail URLs
-        const streamUrl = `${basePath}/stream/${file.path}`;
+        // Add basePath to stream and thumbnail URLs, include user param
+        const user = getCurrentUser();
+        const streamUrl = `${basePath}/stream/${file.path}?user=${encodeURIComponent(user)}`;
         const fileInfo = mediaFiles.find(f => f.path === file.path);
         if (!fileInfo) return;
 
-        const thumbnailUrl = `${basePath}/thumbnail/${fileInfo.thumbnail}`;
+        const thumbnailUrl = `${basePath}/thumbnail/${fileInfo.thumbnail}?user=${encodeURIComponent(user)}`;
 
         // Update current media
         currentMedia = file.path;
@@ -690,7 +733,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Show description
     window.showDescription = function(filePath) {
-        fetch(`${basePath}/description/${filePath}`)
+        const user = getCurrentUser();
+        fetch(`${basePath}/description/${filePath}?user=${encodeURIComponent(user)}`)
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
@@ -708,7 +752,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Function to fetch and render media with current sort settings
     function fetchAndRenderMedia() {
-        fetch(`${basePath}/media?sort=${currentSort}&order=${currentOrder}`)
+        const user = getCurrentUser();
+        fetch(`${basePath}/media?user=${encodeURIComponent(user)}&sort=${currentSort}&order=${currentOrder}`)
             .then(response => response.json())
             .then(data => {
                 mediaFiles = data;
