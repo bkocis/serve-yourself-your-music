@@ -2,11 +2,12 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import time
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
 from flask_socketio import SocketIO
 from moviepy import VideoFileClip
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -36,21 +37,180 @@ if not os.path.exists("templates"):
     os.makedirs("templates")
 
 
-def sanitize_filename(filename):
-    return re.sub(r'[\\/*?:"<>|#]', "", filename)
+def sanitize_filename(filename, max_length=200):
+    """
+    Sanitize filename by removing invalid characters and limiting length.
+
+    Args:
+        filename (str): Original filename
+        max_length (int): Maximum filename length (default: 200)
+
+    Returns:
+        str: Sanitized filename
+    """
+    # Remove invalid characters
+    sanitized = re.sub(r'[\\/*?:"<>|#]', "", filename)
+
+    # Remove leading/trailing whitespace and dots
+    sanitized = sanitized.strip(" .")
+
+    # Limit length while preserving file extension if present
+    if len(sanitized) > max_length:
+        # Try to preserve file extension
+        name_parts = sanitized.rsplit(".", 1)
+        if len(name_parts) == 2 and len(name_parts[1]) <= 10:  # Reasonable extension length
+            extension = "." + name_parts[1]
+            base_name = name_parts[0]
+            max_base_length = max_length - len(extension)
+            if max_base_length > 0:
+                sanitized = base_name[:max_base_length] + extension
+            else:
+                sanitized = base_name[:max_length]
+        else:
+            sanitized = sanitized[:max_length]
+
+    # Ensure we don't return an empty string
+    if not sanitized:
+        sanitized = "untitled"
+
+    return sanitized
+
+
+def normalize_username(username):
+    """
+    Normalize username to lowercase for consistent directory naming
+    while preserving original case for display purposes.
+    """
+    if not username:
+        return None
+    # Strip whitespace and convert to lowercase for directory naming
+    normalized = username.strip().lower()
+    # Apply filename sanitization
+    return sanitize_filename(normalized)
+
+
+def check_disk_space(path, required_bytes=1024 * 1024 * 100):  # Default 100MB
+    """
+    Check if there's enough disk space available.
+
+    Args:
+        path (str): Path to check disk space for
+        required_bytes (int): Required bytes (default: 100MB)
+
+    Returns:
+        bool: True if enough space available, False otherwise
+    """
+    try:
+        stat = shutil.disk_usage(path)
+        return stat.free >= required_bytes
+    except Exception as e:
+        print(f"Warning: Could not check disk space: {e}")
+        return True  # Assume enough space if we can't check
+
+
+def validate_and_create_directory(directory_path):
+    """
+    Validate and create directory if it doesn't exist.
+
+    Args:
+        directory_path (str): Path to validate/create
+
+    Returns:
+        tuple: (success: bool, error_message: str or None)
+    """
+    try:
+        # Create directory if it doesn't exist
+        os.makedirs(directory_path, exist_ok=True)
+
+        # Check if directory is writable
+        if not os.access(directory_path, os.W_OK):
+            return False, f"Directory {directory_path} is not writable"
+
+        return True, None
+    except PermissionError:
+        return False, f"Permission denied creating directory: {directory_path}"
+    except OSError as e:
+        return False, f"Error creating directory {directory_path}: {str(e)}"
+
+
+def safe_subprocess_run(cmd, **kwargs):
+    """
+    Run subprocess with better error handling.
+
+    Args:
+        cmd (list): Command to run
+        **kwargs: Additional arguments for subprocess.run
+
+    Returns:
+        subprocess.CompletedProcess: Result of the command
+    """
+    try:
+        # Extract cwd for error message context
+        cwd = kwargs.get("cwd", os.getcwd())
+        return subprocess.run(cmd, **kwargs)
+    except FileNotFoundError:
+        raise Exception(f"Command not found: {cmd[0]}. Please ensure it's installed and in PATH.")
+    except Exception as e:
+        raise Exception(f"Error running command {' '.join(cmd)} in directory {cwd}: {str(e)}")
 
 
 def extract_mp3(input_file, output_file):
     """
     Extract audio from video file and save as MP3.
-    Requires: moviepy and ffmpeg
+    Uses ffmpeg directly for better reliability.
+    Falls back to moviepy if ffmpeg direct call fails.
     """
     if not output_file.lower().endswith(".mp3"):
         output_file += ".mp3"
-    video = VideoFileClip(input_file)
-    audio = video.audio
-    audio.write_audiofile(output_file, codec="mp3")
-    video.close()
+
+    # Try ffmpeg directly first (more reliable)
+    try:
+        print(f"Attempting audio extraction with ffmpeg: {input_file} -> {output_file}")
+        cmd = [
+            "ffmpeg",
+            "-i",
+            input_file,
+            "-vn",  # No video
+            "-acodec",
+            "libmp3lame",  # MP3 codec
+            "-ab",
+            "192k",  # 192kbps bitrate
+            "-ar",
+            "44100",  # 44.1kHz sample rate
+            "-y",  # Overwrite output file
+            output_file,
+        ]
+
+        result = safe_subprocess_run(cmd, capture_output=True, text=True, timeout=300)  # 5 min timeout
+
+        if result.returncode != 0:
+            error_msg = result.stderr or "Unknown ffmpeg error"
+            print(f"ffmpeg failed: {error_msg}")
+            raise Exception(f"ffmpeg extraction failed: {error_msg}")
+
+        print(f"ffmpeg audio extraction successful: {output_file}")
+        return
+
+    except Exception as e:
+        print(f"ffmpeg extraction failed: {str(e)}, trying moviepy fallback...")
+
+        # Fallback to moviepy
+        try:
+            video = VideoFileClip(input_file)
+            if video.audio is None:
+                video.close()
+                raise Exception("No audio track found in video file")
+
+            audio = video.audio
+            audio.write_audiofile(output_file, codec="mp3", bitrate="192k", verbose=False, logger=None)
+            video.close()
+            print(f"MoviePy audio extraction successful: {output_file}")
+
+        except Exception as moviepy_error:
+            print(f"MoviePy extraction also failed: {str(moviepy_error)}")
+            raise Exception(
+                f"Both ffmpeg and moviepy audio extraction failed. ffmpeg: {str(e)}, moviepy: {str(moviepy_error)}"
+            )
 
 
 def download_video_and_description(url, output_path=None):
@@ -59,93 +219,282 @@ def download_video_and_description(url, output_path=None):
             output_path = MEDIA_FOLDER
 
         print(f"Starting download process for URL: {url}")
+
+        # Validate and create output directory
+        success, error_msg = validate_and_create_directory(output_path)
+        if not success:
+            raise Exception(f"Directory validation failed: {error_msg}")
+
+        # Check disk space (require at least 100MB free)
+        if not check_disk_space(output_path):
+            raise Exception("Insufficient disk space. At least 100MB free space required.")
+
+        print(f"Directory validated: {output_path}")
+
+        # Get video information
         cmd_info = ["yt-dlp", "--dump-json", url]
-        result = subprocess.run(cmd_info, capture_output=True, text=True)
+        result = safe_subprocess_run(cmd_info, capture_output=True, text=True, timeout=30)
 
         if result.returncode != 0:
-            print(f"Error getting video info: {result.stderr}")
-            raise Exception(f"Error getting video info: {result.stderr}")
+            error_msg = result.stderr or "Unknown error getting video info"
+            print(f"Error getting video info: {error_msg}")
+            raise Exception(f"Error getting video info: {error_msg}")
 
-        video_info = json.loads(result.stdout)
-        title = video_info["title"]
-        description = video_info["description"]
+        try:
+            video_info = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise Exception(f"Invalid JSON response from yt-dlp: {e}")
+
+        title = video_info.get("title", "untitled")
+        description = video_info.get("description", "")
         thumbnail_url = video_info.get("thumbnail")
+
+        # Sanitize filename with length limits
         safe_title = sanitize_filename(title)
-        output_template = os.path.join(output_path, safe_title)
+
+        print(f"Sanitized title: '{title}' -> '{safe_title}'")
 
         print(f"Downloading video: {title}")
-        # Command to download video and transcript
+
+        # Enhanced command to download video and transcript with better error handling
         cmd_download = [
             "yt-dlp",
-            "-f",
-            "best",
             "--progress",
+            "--no-warnings",  # Reduce noise in logs
             "--write-auto-sub",  # Download auto-generated transcript if available
             "--write-sub",  # Download manual transcript if available
             "--sub-lang",
             "en",  # Prefer English transcripts
             "--convert-subs",
             "srt",  # Convert subtitles to SRT format
+            "--no-overwrites",  # Don't overwrite existing files
+            "--continue",  # Resume interrupted downloads
+            "--retries",
+            "3",  # Retry failed downloads
+            "--fragment-retries",
+            "3",  # Retry failed fragments
+            "--format",
+            "best[height<=720]/best",  # Prefer 720p or lower to avoid timeouts
             "-o",
-            f"{output_template}.%(ext)s",
+            f"{safe_title}.%(ext)s",  # Use relative filename since we set working directory
             url,
         ]
 
-        process = subprocess.Popen(
-            cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
-        )
+        print(f"Executing download command in directory '{output_path}': {' '.join(cmd_download)}")
 
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                print(line.strip())  # Log all output
-                # Parse progress information
-                if "%" in line:
-                    try:
-                        progress = float(line.split("%")[0].strip().split()[-1])
-                        socketio.emit("download_progress", {"progress": progress})
-                    except Exception as e:
-                        print(f"Error parsing progress: {str(e)}")
+        try:
+            process = subprocess.Popen(
+                cmd_download,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                cwd=output_path,  # Set working directory to output path
+            )
 
-        if process.returncode != 0:
-            error_output = process.stderr.read()
-            print(f"Error downloading video: {error_output}")
-            raise Exception(f"Error downloading video: {error_output}")
+            stderr_output = []
+            download_timeout = 1800  # 30 minutes timeout for downloads
+            start_time = time.time()
+
+            while True:
+                # Check for timeout
+                if time.time() - start_time > download_timeout:
+                    process.kill()
+                    process.wait()
+                    raise Exception(f"Download timeout - process exceeded {download_timeout} seconds")
+
+                line = process.stdout.readline()
+                stderr_line = process.stderr.readline()
+
+                if not line and not stderr_line and process.poll() is not None:
+                    break
+
+                if line:
+                    print(line.strip())  # Log all output
+                    # Parse progress information
+                    if "%" in line:
+                        try:
+                            progress = float(line.split("%")[0].strip().split()[-1])
+                            socketio.emit("download_progress", {"progress": progress})
+                        except Exception as e:
+                            print(f"Error parsing progress: {str(e)}")
+
+                if stderr_line:
+                    stderr_output.append(stderr_line.strip())
+                    print(f"yt-dlp stderr: {stderr_line.strip()}")
+
+                    # Check for specific error patterns that indicate failure
+                    if any(
+                        error_pattern in stderr_line.lower()
+                        for error_pattern in [
+                            "error:",
+                            "unable to download",
+                            "http error",
+                            "network error",
+                            "video unavailable",
+                            "private video",
+                            "age-restricted",
+                        ]
+                    ):
+                        print(f"Detected critical error in stderr: {stderr_line.strip()}")
+
+            # Read any remaining stderr output
+            remaining_stderr = process.stderr.read()
+            if remaining_stderr:
+                stderr_output.append(remaining_stderr.strip())
+                print(f"Remaining stderr: {remaining_stderr.strip()}")
+
+            # Wait for process to complete and get final return code
+            process.wait()
+
+            if process.returncode != 0:
+                error_output = "\n".join(stderr_output) if stderr_output else "Unknown download error"
+                print(f"Error downloading video (exit code {process.returncode}): {error_output}")
+
+                # Try audio-only download as fallback
+                print("Video download failed, attempting audio-only download as fallback...")
+                try:
+                    cmd_audio_only = [
+                        "yt-dlp",
+                        "--progress",
+                        "--no-warnings",
+                        "--format",
+                        "bestaudio/best",
+                        "--extract-audio",
+                        "--audio-format",
+                        "mp3",
+                        "--audio-quality",
+                        "192K",
+                        "--retries",
+                        "3",
+                        "--fragment-retries",
+                        "3",
+                        "-o",
+                        f"{safe_title}.%(ext)s",  # Use relative filename since we set working directory
+                        url,
+                    ]
+
+                    print(f"Executing audio-only download in directory '{output_path}': {' '.join(cmd_audio_only)}")
+                    audio_result = safe_subprocess_run(
+                        cmd_audio_only, capture_output=True, text=True, timeout=600, cwd=output_path
+                    )
+
+                    if audio_result.returncode == 0:
+                        print("Audio-only download successful!")
+                        # Skip video processing since we only have audio
+                        downloaded_video = None
+                    else:
+                        audio_error = audio_result.stderr or "Unknown audio download error"
+                        print(f"Audio-only download also failed: {audio_error}")
+                        raise Exception(
+                            f"Both video and audio-only downloads failed. Video error: "
+                            f"{error_output}. Audio error: {audio_error}"
+                        )
+
+                except Exception as audio_e:
+                    print(f"Audio-only fallback failed: {str(audio_e)}")
+                    raise Exception(f"Error downloading video (exit code {process.returncode}): {error_output}")
+
+        except subprocess.TimeoutExpired:
+            if "process" in locals():
+                process.kill()
+                process.wait()
+            raise Exception("Download timeout - process took too long")
+        except Exception as e:
+            if "process" in locals():
+                try:
+                    process.kill()
+                    process.wait()
+                except Exception:
+                    pass
+            raise Exception(f"Download process error: {str(e)}")
 
         print("Video download completed, processing files...")
+
+        # Verify download completed by checking for files
+        try:
+            downloaded_files = os.listdir(output_path)
+            matching_files = [f for f in downloaded_files if f.startswith(safe_title)]
+
+            if not matching_files:
+                raise Exception(f"No files found with expected prefix '{safe_title}' in {output_path}")
+
+            print(f"Found {len(matching_files)} files with matching prefix")
+
+        except OSError as e:
+            raise Exception(f"Error accessing output directory: {e}")
+
         # Extract audio from the downloaded video
         downloaded_video = None
-        for file in os.listdir(output_path):
+        for file in downloaded_files:
             if file.startswith(safe_title) and any(file.endswith(ext) for ext in ALLOWED_VIDEO_EXTENSIONS):
                 downloaded_video = os.path.join(output_path, file)
                 print(f"Found downloaded video: {downloaded_video}")
                 break
 
-        if downloaded_video:
+        if downloaded_video and os.path.exists(downloaded_video):
             try:
-                print("Extracting audio to MP3...")
+                print(f"Extracting audio to MP3 from video file: {downloaded_video}")
                 audio_output = os.path.join(output_path, f"{safe_title}.mp3")
-                extract_mp3(downloaded_video, audio_output)
-                print(f"Audio extraction completed: {audio_output}")
+
+                # Check if MP3 already exists
+                if os.path.exists(audio_output):
+                    print(f"MP3 file already exists: {audio_output}")
+                else:
+                    # Verify the video file is readable and has audio
+                    video_size = os.path.getsize(downloaded_video)
+                    print(f"Video file size: {video_size / (1024 * 1024):.2f} MB")
+
+                    if video_size < 1024:  # Less than 1KB, probably corrupt
+                        raise Exception(f"Video file appears to be corrupt (size: {video_size} bytes)")
+
+                    extract_mp3(downloaded_video, audio_output)
+
+                    # Verify MP3 was created successfully
+                    if os.path.exists(audio_output):
+                        mp3_size = os.path.getsize(audio_output)
+                        print(f"Audio extraction completed: {audio_output} (size: {mp3_size / (1024 * 1024):.2f} MB)")
+
+                        if mp3_size < 1024:  # Less than 1KB, probably failed
+                            os.remove(audio_output)  # Remove corrupt file
+                            raise Exception("Audio extraction produced corrupt file (too small)")
+                    else:
+                        raise Exception("Audio extraction completed but no MP3 file was created")
+
             except Exception as e:
                 print(f"Error extracting audio: {str(e)}")
-                raise
+                # Don't raise here - video download was successful even if audio extraction fails
+                print("Continuing without audio extraction...")
+                print("Note: Video file is still available for manual audio extraction if needed")
         else:
-            print("Warning: No video file found after download")
+            print(
+                f"Warning: No video file found after download. Expected file: "
+                f"{downloaded_video if downloaded_video else 'None'}"
+            )
+            # List all files in the directory for debugging
+            try:
+                all_files = os.listdir(output_path)
+                print(f"Files found in output directory: {all_files}")
+                video_files = [f for f in all_files if any(f.endswith(ext) for ext in ALLOWED_VIDEO_EXTENSIONS)]
+                print(f"Video files found: {video_files}")
+            except Exception as e:
+                print(f"Error listing directory contents: {e}")
 
         print("Saving description...")
-        description_filename = os.path.join(output_path, f"{safe_title}.txt")
-        with open(description_filename, "w", encoding="utf-8") as file:
-            file.write(description)
-        print(f"Description saved: {description_filename}")
+        try:
+            description_filename = os.path.join(output_path, f"{safe_title}.txt")
+            with open(description_filename, "w", encoding="utf-8") as file:
+                file.write(description)
+            print(f"Description saved: {description_filename}")
+        except Exception as e:
+            print(f"Warning: Could not save description: {e}")
+            # Continue - description save failure shouldn't stop the whole process
 
+        # Download thumbnail (non-critical, continue if it fails)
         if thumbnail_url:
             print(f"Downloading thumbnail from: {thumbnail_url}")
             thumbnail_filename = os.path.join(output_path, f"{safe_title}.jpg")
             try:
-                response = requests.get(thumbnail_url, stream=True)
+                response = requests.get(thumbnail_url, stream=True, timeout=10)
                 response.raise_for_status()
 
                 with open(thumbnail_filename, "wb") as thumb_file:
@@ -153,35 +502,63 @@ def download_video_and_description(url, output_path=None):
                         thumb_file.write(chunk)
                 print(f"Thumbnail saved: {thumbnail_filename}")
             except Exception as e:
-                print(f"Error downloading thumbnail: {str(e)}")
-                raise
+                print(f"Warning: Error downloading thumbnail: {str(e)}")
+                # Continue - thumbnail download failure shouldn't stop the whole process
         else:
             print("Warning: No thumbnail URL available")
 
         print("Creating metadata file...")
-        # Store download date in a metadata file
-        metadata_filename = os.path.join(output_path, f"{safe_title}.meta")
-        download_date = time.time()
+        try:
+            # Store download date in a metadata file
+            metadata_filename = os.path.join(output_path, f"{safe_title}.meta")
+            download_date = time.time()
 
-        # Check if transcript was downloaded and add to metadata
-        transcript_path = None
-        for file in os.listdir(output_path):
-            if file.startswith(safe_title) and file.endswith(".srt"):
-                transcript_path = os.path.join(output_path, file)
-                print(f"Found transcript: {transcript_path}")
-                break
+            # Check if transcript was downloaded and add to metadata
+            transcript_path = None
+            try:
+                current_files = os.listdir(output_path)
+                for file in current_files:
+                    if file.startswith(safe_title) and file.endswith(".srt"):
+                        transcript_path = os.path.join(output_path, file)
+                        print(f"Found transcript: {transcript_path}")
+                        break
+            except Exception as e:
+                print(f"Warning: Error checking for transcript files: {e}")
 
-        with open(metadata_filename, "w") as meta_file:
-            json.dump({
+            metadata = {
                 "download_date": download_date,
-                "has_transcript": transcript_path is not None
-            }, meta_file)
-        print(f"Metadata saved: {metadata_filename}")
+                "has_transcript": transcript_path is not None,
+                "original_title": title,
+                "sanitized_title": safe_title,
+                "source_url": url,
+            }
 
+            with open(metadata_filename, "w", encoding="utf-8") as meta_file:
+                json.dump(metadata, meta_file, indent=2)
+            print(f"Metadata saved: {metadata_filename}")
+
+        except Exception as e:
+            print(f"Warning: Could not save metadata: {e}")
+            # Continue - metadata save failure shouldn't stop the whole process
+
+        print(f"Download process completed successfully for: {title}")
         return {"success": True, "message": f"Successfully downloaded: {title}"}
+
     except Exception as e:
-        print(f"Error in download_video_and_description: {str(e)}")
-        return {"success": False, "message": f"Error: {str(e)}"}
+        error_msg = str(e)
+        print(f"Error in download_video_and_description: {error_msg}")
+
+        # Provide more specific error guidance
+        if "disk space" in error_msg.lower():
+            error_msg += " Please free up some disk space and try again."
+        elif "permission" in error_msg.lower():
+            error_msg += " Please check file permissions for the download directory."
+        elif "directory" in error_msg.lower():
+            error_msg += " Please ensure the download directory is accessible."
+        elif "command not found" in error_msg.lower():
+            error_msg += " Please ensure yt-dlp is installed and accessible."
+
+        return {"success": False, "message": f"Download failed: {error_msg}"}
 
 
 def download_soundcloud_track(url, output_path=None):
@@ -216,18 +593,39 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/dmca_policy")
+def dmca_policy():
+    return render_template("dmca_policy.html")
+
+
 @app.route("/download", methods=["GET", "POST"])
 def download_page():
     if request.method == "POST":
         url = request.form.get("url")
         source = request.form.get("source")
+        user = request.form.get("user")
+        legal_acknowledgment = request.form.get("legal_acknowledgment")
 
         if not url:
             return jsonify({"success": False, "message": "No URL provided"})
+        if not user:
+            return jsonify({"success": False, "message": "No user provided"})
+        if not legal_acknowledgment:
+            return jsonify({"success": False, "message": "Must acknowledge legal terms before downloading"})
+
+        user = normalize_username(user)
+        if not user:
+            return jsonify({"success": False, "message": "Invalid username"})
+        user_dir = os.path.join(MEDIA_FOLDER, user)
+
+        # Use improved directory validation
+        success, error_msg = validate_and_create_directory(user_dir)
+        if not success:
+            return jsonify({"success": False, "message": f"Directory error: {error_msg}"})
         if source == "youtube":
-            result = download_video_and_description(url)
+            result = download_video_and_description(url, output_path=user_dir)
         elif source == "soundcloud":
-            result = download_soundcloud_track(url)
+            result = download_soundcloud_track(url, output_path=user_dir)
         else:
             result = {"success": False, "message": "Invalid source selected"}
         return jsonify(result)
@@ -236,18 +634,19 @@ def download_page():
 
 @app.route("/media")
 def list_media():
-    """List all media files in the media directory."""
+    """List all media files in the user's media directory."""
+    user, user_dir = get_user_from_request()
     media_files = []
     sort_by = request.args.get("sort", "date_downloaded")  # Default sort by date downloaded
     sort_order = request.args.get("order", "desc")  # Default descending order
 
-    for root, dirs, files in os.walk(MEDIA_FOLDER):
+    for root, dirs, files in os.walk(user_dir):
         for file in files:
             file_path = os.path.join(root, file)
             _, extension = os.path.splitext(file)
 
             if extension.lower() in ALLOWED_AUDIO_EXTENSIONS or extension.lower() in ALLOWED_VIDEO_EXTENSIONS:
-                rel_path = os.path.relpath(file_path, MEDIA_FOLDER)
+                rel_path = os.path.relpath(file_path, user_dir)
                 filename_without_ext = os.path.splitext(file)[0]
 
                 media_type = "audio" if extension.lower() in ALLOWED_AUDIO_EXTENSIONS else "video"
@@ -272,7 +671,7 @@ def list_media():
                 for img_ext in ALLOWED_IMAGE_EXTENSIONS:
                     potential_thumbnail = os.path.join(root, filename_without_ext + img_ext)
                     if os.path.exists(potential_thumbnail):
-                        thumbnail_rel_path = os.path.relpath(potential_thumbnail, MEDIA_FOLDER)
+                        thumbnail_rel_path = os.path.relpath(potential_thumbnail, user_dir)
                         thumbnail_found = True
                         break
 
@@ -323,7 +722,8 @@ def list_media():
 @app.route("/stream/<path:filename>")
 def stream_file(filename):
     """Stream a media file."""
-    file_path = os.path.join(MEDIA_FOLDER, filename)
+    user, user_dir = get_user_from_request()
+    file_path = os.path.join(user_dir, filename)
 
     if not os.path.exists(file_path):
         return "File not found", 404
@@ -359,13 +759,27 @@ def stream_file(filename):
 
         return Response(data, 206, headers)
     else:
-        return send_from_directory(MEDIA_FOLDER, filename)
+        return send_from_directory(user_dir, filename)
 
 
 @app.route("/thumbnail/<path:filename>")
 def serve_thumbnail(filename):
-    """Serve thumbnail images from the media folder."""
-    return send_from_directory(MEDIA_FOLDER, filename)
+    """Serve thumbnail images from the user's media folder or default thumbnails."""
+    user, user_dir = get_user_from_request()
+
+    # Check if file exists in user directory first
+    user_file_path = os.path.join(user_dir, filename)
+    if os.path.exists(user_file_path):
+        return send_from_directory(user_dir, filename)
+
+    # If not found in user directory, check for default thumbnails in main downloads folder
+    if filename in ["default_audio_thumbnail.jpg", "default_video_thumbnail.jpg"]:
+        default_file_path = os.path.join(MEDIA_FOLDER, filename)
+        if os.path.exists(default_file_path):
+            return send_from_directory(MEDIA_FOLDER, filename)
+
+    # If file not found anywhere, return 404
+    abort(404)
 
 
 @app.route("/templates/<path:filename>")
@@ -376,10 +790,10 @@ def serve_static(filename):
 
 @app.route("/description/<path:filename>")
 def serve_description(filename):
-    """Serve description files from the media folder."""
-    # Convert the media filename to the corresponding description filename
+    """Serve description files from the user's media folder."""
+    user, user_dir = get_user_from_request()
     base_name = os.path.splitext(filename)[0]
-    description_path = os.path.join(MEDIA_FOLDER, f"{base_name}.txt")
+    description_path = os.path.join(user_dir, f"{base_name}.txt")
 
     if os.path.exists(description_path):
         try:
@@ -396,39 +810,39 @@ def serve_description(filename):
 def delete_files():
     """Delete selected media files and their associated files."""
     try:
-        files = request.json.get("files", [])
+        data = request.get_json(force=True)
+        files = data.get("files", [])
+        user = data.get("user")
         if not files:
             return jsonify({"success": False, "message": "No files selected"})
-
+        if not user:
+            return jsonify({"success": False, "message": "No user provided"})
+        user = normalize_username(user)
+        if not user:
+            return jsonify({"success": False, "message": "Invalid username"})
+        user_dir = os.path.join(MEDIA_FOLDER, user)
+        if not os.path.exists(user_dir):
+            os.makedirs(user_dir)
         deleted_files = []
         errors = []
-
         for file_path in files:
             try:
-                # Get the base name without extension
                 base_name = os.path.splitext(file_path)[0]
-
-                # Delete the main media file
-                media_path = os.path.join(MEDIA_FOLDER, file_path)
+                media_path = os.path.join(user_dir, file_path)
                 if os.path.exists(media_path):
                     os.remove(media_path)
                     deleted_files.append(file_path)
-
-                # Delete associated files (description, thumbnail, metadata)
                 associated_files = [
-                    f"{base_name}.txt",  # description
-                    f"{base_name}.jpg",  # thumbnail
-                    f"{base_name}.meta",  # metadata
+                    f"{base_name}.txt",
+                    f"{base_name}.jpg",
+                    f"{base_name}.meta",
                 ]
-
                 for assoc_file in associated_files:
-                    assoc_path = os.path.join(MEDIA_FOLDER, assoc_file)
+                    assoc_path = os.path.join(user_dir, assoc_file)
                     if os.path.exists(assoc_path):
                         os.remove(assoc_path)
-
             except Exception as e:
                 errors.append(f"Error deleting {file_path}: {str(e)}")
-
         if errors:
             return jsonify(
                 {
@@ -446,7 +860,6 @@ def delete_files():
                     "deleted_files": deleted_files,
                 }
             )
-
     except Exception as e:
         return jsonify({"success": False, "message": f"Error: {str(e)}"})
 
@@ -518,6 +931,22 @@ def search_youtube():
     except Exception as e:
         print(f"Search error: {str(e)}")  # Add debug logging
         return jsonify({"success": False, "message": f"Error searching YouTube: {str(e)}"})
+
+
+# Helper to get user directory
+def get_user_from_request():
+    user = (
+        request.args.get("user") or request.form.get("user") or (request.json.get("user") if request.is_json else None)
+    )
+    if not user:
+        abort(400, description="User not specified")
+    user = normalize_username(user)
+    if not user:
+        abort(400, description="Invalid user")
+    user_dir = os.path.join(MEDIA_FOLDER, user)
+    if not os.path.exists(user_dir):
+        os.makedirs(user_dir)
+    return user, user_dir
 
 
 if __name__ == "__main__":

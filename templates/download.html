@@ -225,11 +225,36 @@
     <div class="container">
         <h1>【 Ｄ Ø Ｗ Ｎ Ｌ Ø Λ Ｄ ░ Ｍ Ｕ Ｓ Ｉ Ｃ ！ 】</h1>
 
+        <div class="user-selector" style="display: flex; justify-content: center; align-items: center; margin-bottom: 20px;">
+            <span id="user-info" style="color: #fff; font-weight: bold;"></span>
+            <input type="text" id="user-input" placeholder="Enter username..." style="padding: 8px; border-radius: 4px; border: 1px solid #333; background: #222; color: #fff; min-width: 180px; display: none;">
+            <button id="login-btn" style="margin-left: 10px; display: none;">Login / Register</button>
+            <button id="logout-btn" style="margin-left: 10px; display: none;">Log out</button>
+        </div>
+
         <div class="nav-links">
             <a href="./">Back to Media Player</a>
+            <a href="./dmca_policy">DMCA Policy</a>
         </div>
 
         <div class="download-container">
+            <div class="legal-notice" style="background-color: #ffeb3b; color: #000; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+                <h3>⚖️ Legal Notice</h3>
+                <p><strong>Important:</strong> You are solely responsible for ensuring you have legal rights to download any content. This service is for personal use of legally acquired media only.</p>
+                <p><strong>Recommended Legal Sources:</strong> Bandcamp (artist-direct), Archive.org (public domain), SoundCloud (free downloads), or content you own.</p>
+                <p><strong>By using this service, you acknowledge:</strong></p>
+                <ul>
+                    <li>You own or have permission for all content you download</li>
+                    <li>You will not download copyrighted content without authorization</li>
+                    <li>You understand this is for personal, non-commercial use only</li>
+                    <li>You assume all legal responsibility for your actions</li>
+                </ul>
+                <label style="display: flex; align-items: center; margin-top: 10px;">
+                    <input type="checkbox" id="legal-acknowledgment" required style="margin-right: 8px;">
+                    <span>I acknowledge the above terms and confirm I have legal rights to download this content</span>
+                </label>
+            </div>
+
             <div class="download-form">
                 <div class="form-group">
                     <label for="url-input">Enter URL to download:</label>
@@ -240,12 +265,12 @@
                     <label>Source:</label>
                     <div class="radio-group">
                         <div class="radio-option">
-                            <input type="radio" id="youtube" name="source" value="youtube" checked>
-                            <label for="youtube">YouTube</label>
+                            <input type="radio" id="soundcloud" name="source" value="soundcloud" checked>
+                            <label for="soundcloud">SoundCloud (Check Permissions)</label>
                         </div>
                         <div class="radio-option">
-                            <input type="radio" id="soundcloud" name="source" value="soundcloud">
-                            <label for="soundcloud">SoundCloud</label>
+                            <input type="radio" id="youtube" name="source" value="youtube">
+                            <label for="youtube">YouTube (⚠️ Use Only for Content You Own)</label>
                         </div>
                     </div>
                 </div>
@@ -305,9 +330,16 @@
             downloadButton.addEventListener('click', function() {
                 const url = urlInput.value.trim();
                 const source = document.querySelector('input[name="source"]:checked').value;
+                const user = localStorage.getItem('currentUser') || '';
+                const legalAcknowledgment = document.getElementById('legal-acknowledgment').checked;
 
                 if (!url) {
                     showStatus('Please enter a valid URL', false);
+                    return;
+                }
+
+                if (!legalAcknowledgment) {
+                    showStatus('Please acknowledge the legal terms before downloading', false);
                     return;
                 }
 
@@ -325,7 +357,7 @@
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     },
-                    body: `url=${encodeURIComponent(url)}&source=${encodeURIComponent(source)}`
+                    body: `url=${encodeURIComponent(url)}&source=${encodeURIComponent(source)}&user=${encodeURIComponent(user)}&legal_acknowledgment=${legalAcknowledgment}`
                 })
                 .then(response => response.json())
                 .then(data => {
@@ -429,6 +461,106 @@
                     searchResults.appendChild(resultItem);
                 });
             }
+
+            // User registration/login/logout logic
+            const userInput = document.getElementById('user-input');
+            const userInfo = document.getElementById('user-info');
+            const loginBtn = document.getElementById('login-btn');
+            const logoutBtn = document.getElementById('logout-btn');
+            let registeredUsers = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+            let currentUser = localStorage.getItem('currentUser') || '';
+
+            function updateUserUI() {
+                // Always refresh currentUser from localStorage to ensure it's up to date
+                currentUser = localStorage.getItem('currentUser') || '';
+                
+                if (currentUser) {
+                    userInfo.textContent = `User: ${currentUser}`;
+                    userInput.style.display = 'none';
+                    loginBtn.style.display = 'none';
+                    logoutBtn.style.display = 'inline-block';
+                } else {
+                    userInfo.textContent = '';
+                    userInput.style.display = 'inline-block';
+                    loginBtn.style.display = 'inline-block';
+                    logoutBtn.style.display = 'none';
+                    // Auto-focus the input field when showing login form
+                    setTimeout(() => {
+                        userInput.focus();
+                    }, 100);
+                }
+            }
+
+            // Initial UI update on page load
+            updateUserUI();
+            
+            // Also update UI when the page becomes visible (handles browser back/forward)
+            document.addEventListener('visibilitychange', function() {
+                if (!document.hidden) {
+                    updateUserUI();
+                }
+            });
+
+            loginBtn.addEventListener('click', function() {
+                const username = userInput.value.trim();
+                if (!username) {
+                    alert('Please enter a username.');
+                    userInput.focus(); // Focus back on input for immediate retry
+                    return;
+                }
+                
+                // Normalize username to lowercase for storage and directory naming
+                const normalizedUsername = username.toLowerCase();
+                
+                // Check if normalized username already exists
+                const existingUser = registeredUsers.find(user => user.toLowerCase() === normalizedUsername);
+                
+                if (!existingUser) {
+                    // Store the original case username for display
+                    registeredUsers.push(username);
+                    localStorage.setItem('registeredUsers', JSON.stringify(registeredUsers));
+                    localStorage.setItem('currentUser', username);
+                } else {
+                    // Use existing username with original case for display
+                    localStorage.setItem('currentUser', existingUser);
+                }
+                
+                currentUser = localStorage.getItem('currentUser');
+                // Update UI to show the logged in user immediately
+                userInfo.textContent = `User: ${currentUser}`;
+                userInput.style.display = 'none';
+                loginBtn.style.display = 'none';
+                logoutBtn.style.display = 'inline-block';
+                
+                // Small delay to show the UI update before refresh
+                setTimeout(() => {
+                    location.reload();
+                }, 500);
+            });
+
+            logoutBtn.addEventListener('click', function() {
+                if (confirm('Are you sure you want to log out?')) {
+                    localStorage.removeItem('currentUser');
+                    currentUser = '';
+                    // Immediately clear the user info display
+                    userInfo.textContent = '';
+                    updateUserUI();
+                    // Clear the input field for fresh login
+                    userInput.value = '';
+                    location.reload();
+                }
+            });
+
+            // Handle Enter key press in username input
+            userInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (!currentUser) {
+                        // Trigger login if not already logged in
+                        loginBtn.click();
+                    }
+                }
+            });
         });
     </script>
 </body>
